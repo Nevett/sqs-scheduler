@@ -1,0 +1,35 @@
+version: '2.1'
+
+services:
+  localstack:
+    image: localstack/localstack
+    ports:
+      - "4566:4566"
+    #   - "4571:4571"
+    #   - "${PORT_WEB_UI-8080}:${PORT_WEB_UI-8080}"
+    environment:
+      - SERVICES=sqs
+      - DOCKER_HOST=unix:///var/run/docker.sock
+    volumes:
+      - "${TMPDIR:-/tmp/localstack}:/tmp/localstack"
+      - "/var/run/docker.sock:/var/run/docker.sock"
+      - "./initaws:/docker-entrypoint-initaws.d"
+      - ready-volume:/ready
+  producer:
+    build:
+      context: .
+      target: producer
+    volumes:
+      - ready-volume:/ready
+    ports: 
+      - "6060:6060"
+  consumer:
+    build:
+      context: .
+      target: consumer
+    volumes:
+      - ready-volume:/ready
+    ports: 
+      - "6061:6061"
+volumes: 
+  ready-volume:
