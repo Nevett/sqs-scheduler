@@ -18,9 +18,9 @@ import (
 
 func main() {
 	go func() {
-		fmt.Println("Starting pprof")
 		fmt.Println(http.ListenAndServe(":6061", nil))
 	}()
+
 	queueName := "test-queue"
 	endpoint := "http://localstack:4566"
 	region := "us-east-1"
@@ -45,23 +45,11 @@ func main() {
 		sqsService: sqsService,
 	}
 
+	messages := make(chan *ReceivedMessage)
+	go messageHandler.getMessages(messages)
 	for {
-		maxMessages := int64(10)
-		waitTimeSeconds := int64(20)
-		messages, err := sqsService.ReceiveMessage(&sqs.ReceiveMessageInput{
-			MaxNumberOfMessages: &maxMessages,
-			QueueUrl:            queueUrl.QueueUrl,
-			WaitTimeSeconds:     &waitTimeSeconds,
-		})
-
-		if err != nil {
-			log.Print(err)
-		}
-
-		fmt.Printf("Received %d messages\n", len(messages.Messages))
-		for i := 0; i < len(messages.Messages); i++ {
-			go messageHandler.handleMessage(messages.Messages[i])
-		}
+		message := <-messages
+		go messageHandler.handleMessage(message)
 	}
 }
 
@@ -70,46 +58,83 @@ type MessageHandler struct {
 	sqsService *sqs.SQS
 }
 
-func (handler MessageHandler) handleMessage(message *sqs.Message) {
-	var msg webhook.Message
-	err := json.Unmarshal([]byte(*message.Body), &msg)
-	if err != nil {
-		panic(err)
-	}
+type ReceivedMessage struct {
+	payload          *webhook.Message
+	sqsReceiptHandle *string
+}
 
-	delay := msg.ScheduledDelivery.Sub(time.Now().UTC())
+func (handler MessageHandler) getMessages(messages chan<- *ReceivedMessage) {
+	maxMessages := int64(10)
+	waitTimeSeconds := int64(20)
+
+	for {
+		receiveResult, err := handler.sqsService.ReceiveMessage(&sqs.ReceiveMessageInput{
+			MaxNumberOfMessages: &maxMessages,
+			QueueUrl:            handler.queueUrl,
+			WaitTimeSeconds:     &waitTimeSeconds,
+		})
+
+		if err != nil {
+			log.Print(err)
+		}
+
+		fmt.Printf("Received %d messages\n", len(receiveResult.Messages))
+		for i := 0; i < len(receiveResult.Messages); i++ {
+			var msg webhook.Message
+			err := json.Unmarshal([]byte(*receiveResult.Messages[i].Body), &msg)
+			if err != nil {
+				log.Println(err)
+				go handler.deleteSqsMessage(receiveResult.Messages[i].ReceiptHandle)
+			} else {
+				messages <- &ReceivedMessage{
+					sqsReceiptHandle: receiveResult.Messages[i].ReceiptHandle,
+					payload:          &msg,
+				}
+			}
+		}
+	}
+}
+
+func (handler MessageHandler) handleMessage(message *ReceivedMessage) {
+
+	delay := message.payload.ScheduledDelivery.Sub(time.Now().UTC())
 
 	deliveryTimer := time.NewTimer(delay)
 	sqsInterval := time.NewTicker(time.Duration(20) * time.Second)
 	deliverySuccess := make(chan int)
 
+done:
 	for {
 		select {
 		case <-deliveryTimer.C:
-			go handler.deliverMessage(&msg, deliverySuccess)
+			go handler.deliverMessage(message, deliverySuccess)
 		case <-sqsInterval.C:
-			go handler.delaySqs(message)
+			go handler.delaySqs(message.sqsReceiptHandle)
 		case <-deliverySuccess:
-			break
+			break done
 		}
 	}
 
+	handler.deleteSqsMessage(message.sqsReceiptHandle)
+}
+
+func (handler MessageHandler) deleteSqsMessage(receiptHandle *string) {
 	handler.sqsService.DeleteMessage(&sqs.DeleteMessageInput{
 		QueueUrl:      handler.queueUrl,
-		ReceiptHandle: message.ReceiptHandle,
+		ReceiptHandle: receiptHandle,
 	})
 }
 
-func (handler MessageHandler) deliverMessage(webhook *webhook.Message, success chan int) {
-	fmt.Printf("Delivering message %s\n", webhook.MessageId)
+func (handler MessageHandler) deliverMessage(message *ReceivedMessage, success chan int) {
+	fmt.Printf("Delivering message %s\n", message.payload.MessageId)
 	success <- 1
 }
 
-func (handler MessageHandler) delaySqs(message *sqs.Message) {
+func (handler MessageHandler) delaySqs(receiptHandle *string) {
 	delay := int64(30)
 	handler.sqsService.ChangeMessageVisibility(&sqs.ChangeMessageVisibilityInput{
 		QueueUrl:          handler.queueUrl,
-		ReceiptHandle:     message.ReceiptHandle,
+		ReceiptHandle:     receiptHandle,
 		VisibilityTimeout: &delay,
 	})
 }
