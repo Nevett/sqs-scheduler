@@ -45,11 +45,22 @@ func main() {
 		sqsService: sqsService,
 	}
 
-	messages := make(chan *ReceivedMessage)
-	go messageHandler.getMessages(messages)
+	receivedMessages := make(chan *ReceivedMessage)
+	completedMessages := make(chan *ReceivedMessage)
+	outstandingMessages := make(map[*ReceivedMessage]bool)
+	statsTicker := time.NewTicker(time.Duration(5) * time.Second)
+
+	go messageHandler.getMessages(receivedMessages)
 	for {
-		message := <-messages
-		go messageHandler.handleMessage(message)
+		select {
+		case message := <-receivedMessages:
+			outstandingMessages[message] = true
+			go messageHandler.handleMessage(message, completedMessages)
+		case successfulMessage := <-completedMessages:
+			delete(outstandingMessages, successfulMessage)
+		case <-statsTicker.C:
+			fmt.Printf("Outstanding messages: %d\n", len(outstandingMessages))
+		}
 	}
 }
 
@@ -78,7 +89,6 @@ func (handler MessageHandler) getMessages(messages chan<- *ReceivedMessage) {
 			log.Print(err)
 		}
 
-		fmt.Printf("Received %d messages\n", len(receiveResult.Messages))
 		for i := 0; i < len(receiveResult.Messages); i++ {
 			var msg webhook.Message
 			err := json.Unmarshal([]byte(*receiveResult.Messages[i].Body), &msg)
@@ -95,7 +105,7 @@ func (handler MessageHandler) getMessages(messages chan<- *ReceivedMessage) {
 	}
 }
 
-func (handler MessageHandler) handleMessage(message *ReceivedMessage) {
+func (handler MessageHandler) handleMessage(message *ReceivedMessage, success chan<- *ReceivedMessage) {
 
 	delay := message.payload.ScheduledDelivery.Sub(time.Now().UTC())
 
@@ -116,6 +126,8 @@ done:
 	}
 
 	handler.deleteSqsMessage(message.sqsReceiptHandle)
+
+	success <- message
 }
 
 func (handler MessageHandler) deleteSqsMessage(receiptHandle *string) {
@@ -126,7 +138,8 @@ func (handler MessageHandler) deleteSqsMessage(receiptHandle *string) {
 }
 
 func (handler MessageHandler) deliverMessage(message *ReceivedMessage, success chan int) {
-	fmt.Printf("Delivering message %s\n", message.payload.MessageId)
+	offset := time.Now().Sub(message.payload.ScheduledDelivery)
+	fmt.Printf("%s: Delivering message %s. Offset: %s\n", time.Now(), message.payload.MessageId, offset)
 	success <- 1
 }
 

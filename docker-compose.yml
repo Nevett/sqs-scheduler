@@ -31,5 +31,11 @@ services:
       - ready-volume:/ready
     ports: 
       - "6061:6061"
+  consumer2:
+    build:
+      context: .
+      target: consumer
+    volumes:
+      - ready-volume:/ready
 volumes: 
   ready-volume:

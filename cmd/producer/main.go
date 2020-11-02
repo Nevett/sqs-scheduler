@@ -43,7 +43,14 @@ func main() {
 
 	i := 0
 	for {
-		delivery := time.Now().UTC().Add(time.Duration(rand.Int31n(120000)) * time.Millisecond)
+		var delivery time.Time
+		if rand.Intn(2) == 0 {
+			// send at random point in next 60s
+			delivery = time.Now().UTC().Add(time.Duration(rand.Int31n(60000)) * time.Millisecond)
+		} else {
+			// send at top of the next minute
+			delivery = time.Now().Add(time.Minute).Truncate(time.Minute)
+		}
 		msg := &webhook.Message{
 			MessageId:         fmt.Sprintf("message-%d", i),
 			ScheduledDelivery: delivery,
@@ -59,8 +66,6 @@ func main() {
 			QueueUrl:    queueUrl.QueueUrl,
 			MessageBody: &jsonStr,
 		})
-
-		fmt.Println("Sent message!")
 
 		time.Sleep(100 * time.Millisecond)
 		i++
